@@ -6,7 +6,7 @@ on:
       - main
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * *'  # Every day at 00:00 UTC
+    - cron: '0 12 * * *'  # Every day at 12:00 UTC
 
 jobs:
   release:
@@ -22,20 +22,13 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Update database
-        run: |
-          chmod +x update_database.py
-          python update_database.py
+      - name: Export IPINFO_TOKEN
+        run: echo "IPINFO_TOKEN=${{ secrets.IPINFO_TOKEN }}" >> $GITHUB_ENV
 
-      - name: Process data
+      - name: Execute workflow
         run: |
-          chmod +x process.py
-          python process.py
-
-      - name: Create compressed files
-        run: |
-          chmod +x release.py
-          python release.py
+          chmod +x workflow.sh
+          bash workflow.sh
           
       - name: Get current date
         id: date
