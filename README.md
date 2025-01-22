@@ -2,6 +2,16 @@
 
 A lightweight IPinfo CSV database, updated daily at 12:00 UTC.
 
+# Download
+
+| Format     | Size   | Latest Release Download Link                                                                |
+| ---------- | ------ | ------------------------------------------------------------------------------------------- |
+| CSV        | ~110MB | `https://github.com/alice39s/ipinfo-csv-lite/releases/latest/download/ipinfo-lite.csv`      |
+| CSV (Gzip) | ~15MB  | `https://github.com/alice39s/ipinfo-csv-lite/releases/latest/download/ipinfo-lite.csv.gz`   |
+| CSV (Lzma) | ~12MB  | `https://github.com/alice39s/ipinfo-csv-lite/releases/latest/download/ipinfo-lite.csv.xz` |
+
+You can also download the latest release from [Releases](https://github.com/Alice39/ipinfo-csv-lite/releases/latest) page.
+
 # Data Structure
 
 ## Python
