@@ -1,6 +1,6 @@
 # ipinfo-csv-lite
 
-A lightweight IPinfo CSV database, containing only "cidr, country_code, continent_code, as_number, as_name" fields.
+A lightweight IPinfo CSV database, updated daily at 12:00 UTC.
 
 # Data Structure
 
@@ -54,7 +54,7 @@ interface IPInfo {
 
 ## Data Source
 
-- [IPinfo](https://ipinfo.io/)
+- [IPinfo](https://ipinfo.io/) - Free IP to Country + IP to ASN
 
 ## License
 
