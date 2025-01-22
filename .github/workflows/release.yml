@@ -1,0 +1,50 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'  # Every day at 00:00 UTC
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          
+      - name: Create compressed files
+        run: |
+          chmod +x release.py
+          python release.py
+          
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+        
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: 1.0.0-${{ steps.date.outputs.date }}
+          tag_name: 1.0.0-${{ steps.date.outputs.date }}
+          files: |
+            LICENSE.DATABASE
+            libs/ipinfo-lite.csv
+            libs/ipinfo-lite.csv.gz
+            libs/ipinfo-lite.csv.xz
+          body: |
+            IPinfo CSV Lite Database Release ${{ steps.date.outputs.date }}
+            
+            This release includes:
+            - ipinfo-lite.csv
+            - ipinfo-lite.csv.gz (gzip compressed)
+            - ipinfo-lite.csv.xz (xz compressed) 

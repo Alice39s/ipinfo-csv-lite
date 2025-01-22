@@ -169,3 +169,7 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Release
+libs/country_asn.csv
+libs/ipinfo-lite.csv
