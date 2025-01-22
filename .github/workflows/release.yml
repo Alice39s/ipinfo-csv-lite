@@ -21,7 +21,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          
+
+      - name: Update database
+        run: |
+          chmod +x update_database.py
+          python update_database.py
+
+      - name: Process data
+        run: |
+          chmod +x process.py
+          python process.py
+
       - name: Create compressed files
         run: |
           chmod +x release.py
