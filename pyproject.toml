@@ -1,0 +1,31 @@
+[project]
+name = "ipinfo-csv-lite"
+version = "1.0.1"
+description = "A lightweight IPinfo CSV database processor, updated daily"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+authors = [
+    { name = "Alice39", email = "180387319+Alice39s@users.noreply.github.com" }
+]
+keywords = ["ipinfo", "ip", "geolocation", "cidr", "database"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.scripts]
+ipinfo-update = "libs.update_database:main"
+ipinfo-process = "libs.process:main"
+ipinfo-release = "libs.release:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["libs"]
+
+[dependency-groups]
+dev = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

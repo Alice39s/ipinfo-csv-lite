@@ -17,10 +17,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
       - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+        run: uv python install 3.14
 
       - name: Export IPINFO_TOKEN
         run: echo "IPINFO_TOKEN=${{ secrets.IPINFO_TOKEN }}" >> $GITHUB_ENV
@@ -37,8 +38,8 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          name: 1.0.0-${{ steps.date.outputs.date }}
-          tag_name: 1.0.0-${{ steps.date.outputs.date }}
+          name: 1.0.1-${{ steps.date.outputs.date }}
+          tag_name: 1.0.1-${{ steps.date.outputs.date }}
           files: |
             LICENSE.DATABASE
             libs/ipinfo-lite.csv

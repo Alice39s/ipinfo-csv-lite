@@ -171,5 +171,11 @@ cython_debug/
 .pypirc
 
 # Release
-libs/country_asn.csv
-libs/ipinfo-lite.csv
+.*/
+libs/**
+
+*.md
+!README.md
+
+# Keep libs directory
+!libs/*.py
