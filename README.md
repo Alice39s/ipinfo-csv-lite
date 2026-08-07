@@ -53,14 +53,25 @@ interface IPInfo {
 
 ## Requirements
 
-- Python 3.10+
+- Go 1.24+ (only needed to build the pipeline; downloading the CSV requires nothing)
 
 ## Usage
 
+### Automatic (requires an IPinfo token)
+
+```bash
+export IPINFO_TOKEN=<your-token>
+make
+```
+
+This runs `update` (download + extract), `process` (reduce to the lite schema) and `release` (gzip/xz compression) in sequence. Outputs land in `./data/`.
+
+### Manual (no token)
+
 1. Download the latest IPinfo CSV file from [IPinfo Dashboard](https://ipinfo.io/account/data-downloads) - "Free IP to Country + IP to ASN".
-2. Move the CSV file to `./libs/country_asn.csv`.
-3. Run the script.
-4. The output file will be `./libs/ipinfo-lite.csv`.
+2. Move the CSV file to `./data/country_asn.csv`.
+3. Run `make process release`.
+4. The output file will be `./data/ipinfo-lite.csv`.
 
 ## Data Source
 

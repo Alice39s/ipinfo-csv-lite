@@ -17,19 +17,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Set up Python
-        run: uv python install 3.14
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
 
       - name: Export IPINFO_TOKEN
         run: echo "IPINFO_TOKEN=${{ secrets.IPINFO_TOKEN }}" >> $GITHUB_ENV
 
       - name: Execute workflow
-        run: |
-          chmod +x workflow.sh
-          bash workflow.sh
+        run: make
 
       - name: Get current date
         id: date
@@ -38,13 +35,13 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          name: 1.0.1-${{ steps.date.outputs.date }}
-          tag_name: 1.0.1-${{ steps.date.outputs.date }}
+          name: 2.0.0-${{ steps.date.outputs.date }}
+          tag_name: 2.0.0-${{ steps.date.outputs.date }}
           files: |
             LICENSE.DATABASE
-            libs/ipinfo-lite.csv
-            libs/ipinfo-lite.csv.gz
-            libs/ipinfo-lite.csv.xz
+            data/ipinfo-lite.csv
+            data/ipinfo-lite.csv.gz
+            data/ipinfo-lite.csv.xz
           body: |
             IPinfo CSV Lite Database Release ${{ steps.date.outputs.date }}
 
