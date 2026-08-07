@@ -12,7 +12,7 @@ import (
 )
 
 func TestMmdbRecord(t *testing.T) {
-	record, ok := mmdbRecord([]string{"1.0.0.0/24", "AU", "OC", "13335", "Cloudflare"})
+	record, key, ok := mmdbRecord([]string{"1.0.0.0/24", "AU", "OC", "13335", "Cloudflare"})
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -22,9 +22,12 @@ func TestMmdbRecord(t *testing.T) {
 	if _, ok := record["as_name"]; !ok {
 		t.Error("missing as_name")
 	}
+	if key != "AU\x00OC\x0013335\x00Cloudflare" {
+		t.Errorf("dedup key = %q, want the NUL-joined tuple", key)
+	}
 
 	// Empty fields are omitted; as_number is always present.
-	record, ok = mmdbRecord([]string{"57.144.0.0/16", "", "", "0", ""})
+	record, key, ok = mmdbRecord([]string{"57.144.0.0/16", "", "", "0", ""})
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -37,11 +40,14 @@ func TestMmdbRecord(t *testing.T) {
 	if _, ok := record["as_number"]; !ok {
 		t.Error("as_number should always be present")
 	}
+	if key != "\x00\x000\x00" {
+		t.Errorf("dedup key for empty tuple = %q", key)
+	}
 
-	if _, ok := mmdbRecord([]string{"", "AU", "OC", "0", ""}); ok {
+	if _, _, ok := mmdbRecord([]string{"", "AU", "OC", "0", ""}); ok {
 		t.Error("expected ok=false for empty cidr")
 	}
-	if _, ok := mmdbRecord([]string{"short"}); ok {
+	if _, _, ok := mmdbRecord([]string{"short"}); ok {
 		t.Error("expected ok=false for short row")
 	}
 }
@@ -86,7 +92,7 @@ func TestMmdbSmoke(t *testing.T) {
 		{"2001:4860:4860::/48", "US", "NA", "15169", "Google LLC"},
 	}
 	for _, row := range rows {
-		record, ok := mmdbRecord(row)
+		record, _, ok := mmdbRecord(row)
 		if !ok {
 			t.Fatalf("mmdbRecord(%v) not ok", row)
 		}

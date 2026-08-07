@@ -45,6 +45,12 @@ func runMmdb() error {
 	}
 
 	var inserted, skipped int
+	// The 3.47M source rows collapse to only ~120k unique records; build each
+	// mmdbtype.Map once and reuse it. mmdbwriter's dataMap already dedups the
+	// serialized record, so reusing one Map object across many inserts is safe
+	// (the default inserter never mutates the value it receives) and removes
+	// ~1.2 GB of per-row Map allocations plus the associated GC churn.
+	records := make(map[string]mmdbtype.Map, 1<<17)
 	for {
 		row, err := reader.Read()
 		if err == io.EOF {
@@ -54,17 +60,24 @@ func runMmdb() error {
 			return err
 		}
 
-		record, ok := mmdbRecord(row)
+		key, ok := recordDedupKey(row)
 		if !ok {
 			skipped++
 			continue
+		}
+		// Reuse the Map for every network that shares this record tuple;
+		// only build it on the first sighting.
+		rec, hit := records[key]
+		if !hit {
+			rec = buildMmdbRecord(row)
+			records[key] = rec
 		}
 		network, err := parseNetwork(row[0])
 		if err != nil {
 			skipped++
 			continue
 		}
-		if err := tree.Insert(network, record); err != nil {
+		if err := tree.Insert(network, rec); err != nil {
 			return fmt.Errorf("insert %s: %w", row[0], err)
 		}
 		inserted++
@@ -131,18 +144,25 @@ func parseNetwork(cidr string) (*net.IPNet, error) {
 	return &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}, nil
 }
 
-// mmdbRecord maps a lite CSV row (cidr, country_code, continent_code,
-// as_number, as_name) to an MMDB record. ok is false for malformed rows.
-func mmdbRecord(row []string) (mmdbtype.Map, bool) {
+// recordDedupKey validates a lite CSV row (cidr, country_code, continent_code,
+// as_number, as_name) and returns a stable key over its four output fields.
+// ok is false for malformed rows (too few columns or empty network). The key
+// lets runMmdb build one mmdbtype.Map per unique record instead of per row.
+// Fields are NUL-separated; NUL never appears in CSV cell values.
+func recordDedupKey(row []string) (string, bool) {
 	if len(row) < 5 || row[0] == "" {
-		return nil, false
+		return "", false
 	}
+	return row[1] + "\x00" + row[2] + "\x00" + row[3] + "\x00" + row[4], true
+}
 
+// buildMmdbRecord constructs the mmdbtype.Map for a validated row. Empty
+// optional fields are omitted; as_number is always present (uint32).
+func buildMmdbRecord(row []string) mmdbtype.Map {
 	asNumber, err := strconv.ParseUint(row[3], 10, 32)
 	if err != nil {
 		asNumber = 0
 	}
-
 	record := mmdbtype.Map{
 		"as_number": mmdbtype.Uint32(asNumber),
 	}
@@ -155,5 +175,16 @@ func mmdbRecord(row []string) (mmdbtype.Map, bool) {
 	if row[4] != "" {
 		record["as_name"] = mmdbtype.String(row[4])
 	}
-	return record, true
+	return record
+}
+
+// mmdbRecord is a convenience wrapper combining recordDedupKey and
+// buildMmdbRecord, used by tests. Production code (runMmdb) splits them so it
+// can skip the Map allocation on cache hits.
+func mmdbRecord(row []string) (record mmdbtype.Map, key string, ok bool) {
+	key, ok = recordDedupKey(row)
+	if !ok {
+		return nil, "", false
+	}
+	return buildMmdbRecord(row), key, true
 }
