@@ -8,30 +8,41 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
 )
 
-// runRelease compresses data/ipinfo-lite.csv to both gzip and xz formats.
+// runRelease compresses data/ipinfo-lite.csv to gzip, xz and zstd formats,
+// all written concurrently.
 func runRelease() error {
 	input := filepath.Join(dataDir, "ipinfo-lite.csv")
 	if _, err := os.Stat(input); err != nil {
 		return fmt.Errorf("%s not found", input)
 	}
 
-	var wg sync.WaitGroup
-	errs := make(chan error, 2)
-
-	compress := func(dst string, newWriter func(io.Writer) (io.WriteCloser, error)) {
-		defer wg.Done()
-		fmt.Printf("Creating %s...\n", dst)
-		if err := compressFile(input, dst, newWriter); err != nil {
-			errs <- err
-		}
+	targets := []struct {
+		ext       string
+		newWriter func(io.Writer) (io.WriteCloser, error)
+	}{
+		{".gz", func(w io.Writer) (io.WriteCloser, error) { return gzip.NewWriter(w), nil }},
+		{".xz", func(w io.Writer) (io.WriteCloser, error) { return xz.NewWriter(w) }},
+		{".zst", func(w io.Writer) (io.WriteCloser, error) { return zstd.NewWriter(w) }},
 	}
 
-	wg.Add(2)
-	go compress(input+".gz", func(w io.Writer) (io.WriteCloser, error) { return gzip.NewWriter(w), nil })
-	go compress(input+".xz", func(w io.Writer) (io.WriteCloser, error) { return xz.NewWriter(w) })
+	var wg sync.WaitGroup
+	errs := make(chan error, len(targets))
+
+	for _, t := range targets {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dst := input + t.ext
+			fmt.Printf("Creating %s...\n", dst)
+			if err := compressFile(input, dst, t.newWriter); err != nil {
+				errs <- err
+			}
+		}()
+	}
 	wg.Wait()
 	close(errs)
 

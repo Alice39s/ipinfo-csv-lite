@@ -20,8 +20,11 @@ Usage:
 Commands:
   update    Download and extract the latest IPinfo database (requires IPINFO_TOKEN)
   process   Reduce the raw CSV to the lite schema
-  release   Compress the output to .gz and .xz
-  all       Run update, process and release in sequence
+  release   Compress the output to .gz, .xz and .zst
+  mmdb      Convert the output to MaxMind DB format (.mmdb)
+  xdb       Convert the output to ip2region xdb format (.ipv4.xdb / .ipv6.xdb)
+  checksum  Write checksums.txt with SHA-256 of all release artifacts
+  all       Run all of the above in sequence
 `, version)
 }
 
@@ -43,6 +46,12 @@ func main() {
 		err = runProcess()
 	case "release":
 		err = runRelease()
+	case "mmdb":
+		err = runMmdb()
+	case "xdb":
+		err = runXdb()
+	case "checksum":
+		err = runChecksum()
 	case "all":
 		err = runAll()
 	case "-h", "--help", "help":
@@ -64,7 +73,7 @@ func main() {
 }
 
 func runAll() error {
-	for _, step := range []func() error{runUpdate, runProcess, runRelease} {
+	for _, step := range []func() error{runUpdate, runProcess, runRelease, runMmdb, runXdb, runChecksum} {
 		if err := step(); err != nil {
 			return err
 		}

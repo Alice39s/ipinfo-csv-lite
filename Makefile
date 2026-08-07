@@ -4,9 +4,9 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all build update process release fmt vet clean
+.PHONY: all build update process release mmdb xdb checksum fmt vet test clean
 
-all: update process release
+all: update process release mmdb xdb checksum
 	@echo "All steps executed successfully."
 
 build:
@@ -22,13 +22,27 @@ process: build
 release: build
 	$(BINARY) release
 
+mmdb: build
+	$(BINARY) mmdb
+
+xdb: build
+	$(BINARY) xdb
+
+checksum: build
+	$(BINARY) checksum
+
 fmt:
 	gofmt -w .
 
 vet:
 	go vet ./...
 
+test:
+	go test ./...
+
 clean:
 	rm -rf bin data/country_asn.csv data/country_asn.csv.gz \
 		data/ipinfo-lite.csv data/ipinfo-lite.csv.gz data/ipinfo-lite.csv.xz \
-		data/ipinfo.version
+		data/ipinfo-lite.csv.zst data/ipinfo-lite.mmdb \
+		data/ipinfo-lite.ipv4.xdb data/ipinfo-lite.ipv6.xdb \
+		data/checksums.txt data/ipinfo.version
