@@ -10,7 +10,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
+	"sync"
 	"time"
 )
 
@@ -89,20 +90,36 @@ func runXdb() error {
 		}
 	}
 
-	for _, job := range []struct {
+	// IPv4 and IPv6 files are independent; build them concurrently.
+	jobs := []struct {
 		name    string
 		version xdbVersion
 		segs    []xdbSegment
 	}{
 		{"ipinfo-lite.ipv4.xdb", xdbIPv4, v4Segs},
 		{"ipinfo-lite.ipv6.xdb", xdbIPv6, v6Segs},
-	} {
-		output := filepath.Join(dataDir, job.name)
-		segs := fillGaps(job.segs, job.version.ipLen)
-		if err := writeXdb(output, job.version, segs); err != nil {
-			return err
-		}
-		fmt.Printf("Wrote %s (%d segments)\n", output, len(segs))
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, len(jobs))
+	for _, job := range jobs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			output := filepath.Join(dataDir, job.name)
+			segs := fillGaps(job.segs, job.version.ipLen)
+			if err := writeXdb(output, job.version, segs); err != nil {
+				errs <- err
+				return
+			}
+			fmt.Printf("Wrote %s (%d segments)\n", output, len(segs))
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		return err
 	}
 	return nil
 }
@@ -148,8 +165,8 @@ func parseSegment(cidr, region string) (xdbSegment, xdbVersion, error) {
 // fillGaps sorts segments and inserts empty-region segments so the result is
 // continuous and covers the entire address space.
 func fillGaps(segs []xdbSegment, ipLen int) []xdbSegment {
-	sort.Slice(segs, func(i, j int) bool {
-		return bytes.Compare(segs[i].start, segs[j].start) < 0
+	slices.SortFunc(segs, func(a, b xdbSegment) int {
+		return bytes.Compare(a.start, b.start)
 	})
 
 	maxIP := bytes.Repeat([]byte{0xff}, ipLen)
@@ -186,6 +203,10 @@ func writeXdb(dst string, version xdbVersion, segs []xdbSegment) error {
 		return err
 	}
 
+	// All sequential writes go through a large buffer; the header and vector
+	// index are patched afterwards with WriteAt once the buffer is flushed.
+	w := bufio.NewWriterSize(f, 1<<20)
+
 	// Header segment: 256 bytes, index pointers patched at the end.
 	header := make([]byte, xdbHeaderLength)
 	binary.LittleEndian.PutUint16(header[0:], xdbVersionNo)
@@ -193,7 +214,7 @@ func writeXdb(dst string, version xdbVersion, segs []xdbSegment) error {
 	binary.LittleEndian.PutUint32(header[4:], uint32(time.Now().Unix()))
 	binary.LittleEndian.PutUint16(header[16:], version.id)
 	binary.LittleEndian.PutUint16(header[18:], 4) // runtime pointer bytes
-	if _, err := f.Write(header); err != nil {
+	if _, err := w.Write(header); err != nil {
 		f.Close()
 		return err
 	}
@@ -201,7 +222,7 @@ func writeXdb(dst string, version xdbVersion, segs []xdbSegment) error {
 	// Vector index segment: kept in memory, filled during index writing,
 	// flushed afterwards; write the zeroed placeholder now.
 	vectorIndex := make([]byte, xdbVectorLength)
-	if _, err := f.Write(vectorIndex); err != nil {
+	if _, err := w.Write(vectorIndex); err != nil {
 		f.Close()
 		return err
 	}
@@ -219,7 +240,7 @@ func writeXdb(dst string, version xdbVersion, segs []xdbSegment) error {
 			f.Close()
 			return fmt.Errorf("region too long (%d bytes): %q", len(region), seg.region)
 		}
-		if _, err := f.Write(region); err != nil {
+		if _, err := w.Write(region); err != nil {
 			f.Close()
 			return err
 		}
@@ -243,7 +264,7 @@ func writeXdb(dst string, version xdbVersion, segs []xdbSegment) error {
 			copy(item[version.ipLen:], s.end)
 			binary.LittleEndian.PutUint16(item[2*version.ipLen:], uint16(len(seg.region)))
 			binary.LittleEndian.PutUint32(item[2*version.ipLen+2:], ptr)
-			if _, err := f.Write(item); err != nil {
+			if _, err := w.Write(item); err != nil {
 				f.Close()
 				return err
 			}
@@ -255,6 +276,11 @@ func writeXdb(dst string, version xdbVersion, segs []xdbSegment) error {
 			}
 			offset += int64(version.indexSize)
 		}
+	}
+
+	if err := w.Flush(); err != nil {
+		f.Close()
+		return err
 	}
 
 	// Flush the vector index buffer.

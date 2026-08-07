@@ -40,6 +40,7 @@ func runMmdb() error {
 		RecordSize:              28,
 		IPVersion:               6, // IPv6 tree holds both IPv4 and IPv6 networks
 		IncludeReservedNetworks: true,
+		KeyGenerator:            keyGenFunc(recordKey),
 	})
 	if err != nil {
 		return err
@@ -91,6 +92,33 @@ func runMmdb() error {
 
 	fmt.Printf("Wrote %s (%d networks, %d skipped)\n", output, inserted, skipped)
 	return nil
+}
+
+// keyGenFunc adapts a function to the mmdbwriter.KeyGenerator interface.
+type keyGenFunc func(mmdbtype.DataType) ([]byte, error)
+
+func (f keyGenFunc) Key(v mmdbtype.DataType) ([]byte, error) { return f(v) }
+
+// recordKey generates the dedup key for our flat record structure directly,
+// avoiding the default serializer+SHA-256 key generator which is slow for
+// millions of inserts. Fields are joined with NUL separators (never present
+// in CSV values), so distinct records always produce distinct keys.
+func recordKey(v mmdbtype.DataType) ([]byte, error) {
+	m, ok := v.(mmdbtype.Map)
+	if !ok {
+		return nil, fmt.Errorf("unexpected record type %T", v)
+	}
+	key := make([]byte, 0, 64)
+	for _, field := range []string{"country_code", "continent_code", "as_number", "as_name"} {
+		switch value := m[mmdbtype.String(field)].(type) {
+		case mmdbtype.String:
+			key = append(key, value...)
+		case mmdbtype.Uint32:
+			key = strconv.AppendUint(key, uint64(value), 10)
+		}
+		key = append(key, 0)
+	}
+	return key, nil
 }
 
 // parseNetwork parses a CIDR, tolerating plain IP addresses (treated as
