@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
-	"encoding/csv"
 	"fmt"
 	"io"
 	"net/netip"
@@ -54,17 +53,11 @@ type xdbSegment struct {
 func runXdb() error {
 	input := filepath.Join(dataDir, "ipinfo-lite.csv")
 
-	fIn, err := os.Open(input)
+	fIn, reader, err := openLiteCSV(input)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", input, err)
+		return err
 	}
 	defer fIn.Close()
-
-	reader := csv.NewReader(bufio.NewReaderSize(fIn, 1<<20))
-	reader.FieldsPerRecord = -1
-	if _, err := reader.Read(); err != nil {
-		return fmt.Errorf("read header: %w", err)
-	}
 
 	var v4Segs, v6Segs []xdbSegment
 	for {

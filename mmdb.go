@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bufio"
-	"encoding/csv"
 	"fmt"
 	"io"
 	"net"
@@ -27,9 +25,9 @@ func runMmdb() error {
 	input := filepath.Join(dataDir, "ipinfo-lite.csv")
 	output := filepath.Join(dataDir, "ipinfo-lite.mmdb")
 
-	fIn, err := os.Open(input)
+	fIn, reader, err := openLiteCSV(input)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", input, err)
+		return err
 	}
 	defer fIn.Close()
 
@@ -44,12 +42,6 @@ func runMmdb() error {
 	})
 	if err != nil {
 		return err
-	}
-
-	reader := csv.NewReader(bufio.NewReaderSize(fIn, 1<<20))
-	reader.FieldsPerRecord = -1
-	if _, err := reader.Read(); err != nil {
-		return fmt.Errorf("read header: %w", err)
 	}
 
 	var inserted, skipped int
