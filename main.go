@@ -26,6 +26,10 @@ Commands:
 }
 
 func main() {
+	if err := loadDotenv(".env"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not load .env: %v\n", err)
+	}
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
