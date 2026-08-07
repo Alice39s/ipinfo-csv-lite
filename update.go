@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -46,6 +48,12 @@ func runUpdate() error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		// *url.Error would embed the request URL (which carries the token);
+		// unwrap it so the token never lands in logs.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return fmt.Errorf("download failed: %w", urlErr.Err)
+		}
 		return fmt.Errorf("download failed: %w", err)
 	}
 	defer resp.Body.Close()
