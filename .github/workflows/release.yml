@@ -12,8 +12,9 @@ jobs:
   release:
     runs-on: ubuntu-22.04
     permissions:
-      contents: write
-      administration: write # enforce immutable releases on the repository
+      contents: write # create releases and upload assets
+      id-token: write # sign artifact attestations
+      attestations: write # publish artifact attestations
 
     steps:
       - uses: actions/checkout@v4
@@ -27,23 +28,33 @@ jobs:
         run: make vet test
 
       - name: Export IPINFO_TOKEN
-        run: echo "IPINFO_TOKEN=${{ secrets.IPINFO_TOKEN }}" >> $GITHUB_ENV
+        run: echo "IPINFO_TOKEN=${{ secrets.IPINFO_TOKEN }}" >> "$GITHUB_ENV"
 
       - name: Execute workflow
         run: make
 
       - name: Get current tag
         id: tag
-        run: echo "tag=2.0.0-$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+        run: echo "tag=2.0.0-$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
 
-      # Once enabled, every newly published release (tag + assets) becomes
-      # immutable. The PUT is idempotent, so this also keeps the setting on.
-      - name: Enforce immutable releases
-        run: gh api -X PUT /repos/${{ github.repository }}/immutable-releases
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Cryptographically bind each artifact to this commit (Sigstore).
+      - name: Generate artifact attestations
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            data/ipinfo-lite.csv
+            data/ipinfo-lite.csv.gz
+            data/ipinfo-lite.csv.xz
+            data/ipinfo-lite.csv.zst
+            data/ipinfo-lite.mmdb
+            data/ipinfo-lite.ipv4.xdb
+            data/ipinfo-lite.ipv6.xdb
+            data/checksums.txt
 
       # Immutable-release flow: create a draft, attach all assets, publish last.
+      # NOTE: immutable releases are a repository setting (Settings ->
+      # "Enable release immutability"); once enabled, publishing locks the
+      # tag and assets. GITHUB_TOKEN cannot toggle it from a workflow.
       - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:
@@ -71,6 +82,9 @@ jobs:
             - ipinfo-lite.mmdb (MaxMind DB)
             - ipinfo-lite.ipv4.xdb / ipinfo-lite.ipv6.xdb (ip2region xdb)
             - checksums.txt (SHA-256 of all artifacts)
+
+            All artifacts carry Sigstore build-provenance attestations;
+            verify with `gh attestation verify <file> --repo Alice39s/ipinfo-csv-lite`.
 
       - name: Publish release
         run: gh release edit "${{ steps.tag.outputs.tag }}" --draft=false --latest

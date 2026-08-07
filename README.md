@@ -15,7 +15,11 @@ A lightweight IPinfo CSV database, updated daily at 12:00 UTC.
 | XDB (IPv6)   | `https://github.com/alice39s/ipinfo-csv-lite/releases/latest/download/ipinfo-lite.ipv6.xdb` |
 | SHA-256 Sums | `https://github.com/alice39s/ipinfo-csv-lite/releases/latest/download/checksums.txt`        |
 
-All releases are published as [immutable releases](https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases) — assets and tags cannot be modified after publication, and each release carries a signed attestation verifiable with `gh release verify`.
+All releases are published as [immutable releases](https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases) — assets and tags cannot be modified after publication. Every artifact also carries a signed build-provenance attestation binding it to the source commit, verifiable with:
+
+```bash
+gh attestation verify ipinfo-lite.mmdb --repo Alice39s/ipinfo-csv-lite
+```
 
 You can also download the latest release from [Releases](https://github.com/Alice39/ipinfo-csv-lite/releases/latest) page.
 
