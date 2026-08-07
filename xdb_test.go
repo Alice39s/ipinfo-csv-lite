@@ -148,6 +148,15 @@ func TestParseSegment(t *testing.T) {
 		t.Errorf("range = %v-%v, want 1.2.3.0-1.2.3.255", seg.start, seg.end)
 	}
 
+	// Plain IP addresses are treated as single-host prefixes.
+	seg, _, err = parseSegment("1.7.168.174", "R")
+	if err != nil {
+		t.Fatalf("parseSegment plain IP: %v", err)
+	}
+	if !bytes.Equal(seg.start, seg.end) || !bytes.Equal(seg.start, []byte{1, 7, 168, 174}) {
+		t.Errorf("plain IP range = %v-%v, want 1.7.168.174-1.7.168.174", seg.start, seg.end)
+	}
+
 	seg, _, err = parseSegment("1.2.3.4/0", "R")
 	if err != nil {
 		t.Fatalf("parseSegment /0: %v", err)

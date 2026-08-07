@@ -46,6 +46,28 @@ func TestMmdbRecord(t *testing.T) {
 	}
 }
 
+func TestParseNetwork(t *testing.T) {
+	n, err := parseNetwork("1.7.168.174")
+	if err != nil {
+		t.Fatalf("parseNetwork plain IPv4: %v", err)
+	}
+	if ones, bits := n.Mask.Size(); ones != 32 || bits != 32 {
+		t.Errorf("plain IPv4 mask = /%d of %d bits, want /32", ones, bits)
+	}
+
+	n, err = parseNetwork("2001:4860:4860::8888")
+	if err != nil {
+		t.Fatalf("parseNetwork plain IPv6: %v", err)
+	}
+	if ones, bits := n.Mask.Size(); ones != 128 || bits != 128 {
+		t.Errorf("plain IPv6 mask = /%d of %d bits, want /128", ones, bits)
+	}
+
+	if _, err = parseNetwork("not-an-ip"); err == nil {
+		t.Error("expected error for invalid input")
+	}
+}
+
 func TestMmdbSmoke(t *testing.T) {
 	tree, err := mmdbwriter.New(mmdbwriter.Options{
 		DatabaseType:            "ipinfo-lite",

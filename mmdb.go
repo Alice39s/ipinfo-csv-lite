@@ -66,7 +66,7 @@ func runMmdb() error {
 			skipped++
 			continue
 		}
-		_, network, err := net.ParseCIDR(row[0])
+		network, err := parseNetwork(row[0])
 		if err != nil {
 			skipped++
 			continue
@@ -91,6 +91,24 @@ func runMmdb() error {
 
 	fmt.Printf("Wrote %s (%d networks, %d skipped)\n", output, inserted, skipped)
 	return nil
+}
+
+// parseNetwork parses a CIDR, tolerating plain IP addresses (treated as
+// /32 or /128) which occur in the source data.
+func parseNetwork(cidr string) (*net.IPNet, error) {
+	if _, network, err := net.ParseCIDR(cidr); err == nil {
+		return network, nil
+	}
+	ip := net.ParseIP(cidr)
+	if ip == nil {
+		return nil, fmt.Errorf("invalid network %q", cidr)
+	}
+	bits := 128
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+		bits = 32
+	}
+	return &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}, nil
 }
 
 // mmdbRecord maps a lite CSV row (cidr, country_code, continent_code,

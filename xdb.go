@@ -108,10 +108,20 @@ func runXdb() error {
 }
 
 // parseSegment converts a CIDR into an xdbSegment covering the full prefix range.
+// Plain IP addresses (treated as /32 or /128) are accepted since they occur
+// in the source data.
 func parseSegment(cidr, region string) (xdbSegment, xdbVersion, error) {
 	p, err := netip.ParsePrefix(cidr)
 	if err != nil {
-		return xdbSegment{}, xdbVersion{}, err
+		addr, addrErr := netip.ParseAddr(cidr)
+		if addrErr != nil {
+			return xdbSegment{}, xdbVersion{}, err
+		}
+		bits := 128
+		if addr.Is4() {
+			bits = 32
+		}
+		p = netip.PrefixFrom(addr, bits)
 	}
 	p = p.Masked()
 
