@@ -181,9 +181,11 @@ func transformRow(row []string) (out []string, ok bool) {
 	}, true
 }
 
-// parseASN strips the "AS" prefix; empty or unparsable values become 0.
+// parseASN strips a leading "AS" prefix; empty or unparsable values become 0.
+// Only a single leading prefix is removed (not every "AS" substring), so an
+// AS name containing "AS" internally would not corrupt the number.
 func parseASN(asn string) int {
-	n, err := strconv.Atoi(strings.TrimSpace(strings.ReplaceAll(asn, "AS", "")))
+	n, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(asn), "AS"))
 	if err != nil {
 		return 0
 	}

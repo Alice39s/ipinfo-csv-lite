@@ -9,15 +9,17 @@ import (
 
 func TestParseASN(t *testing.T) {
 	cases := map[string]int{
-		"AS13335":  13335,
-		"AS15169":  15169,
-		" AS6939 ": 6939,
-		"":         0,
-		"   ":      0,
-		"AS":       0,
-		"ASabc":    0,
-		"foo":      0,
-		"0":        0,
+		"AS13335":   13335,
+		"AS15169":   15169,
+		" AS6939 ":  6939,
+		"":          0,
+		"   ":       0,
+		"AS":        0,
+		"ASabc":     0,
+		"foo":       0,
+		"0":         0,
+		"13335":     13335, // no prefix is still accepted
+		"AS123AS45": 0,     // only a single leading prefix is stripped; the rest must be a clean integer
 	}
 	for in, want := range cases {
 		if got := parseASN(in); got != want {
