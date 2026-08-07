@@ -173,13 +173,18 @@ func fillGaps(segs []xdbSegment, ipLen int) []xdbSegment {
 			s.start = prev // clamp partial overlap
 		}
 		if bytes.Compare(s.start, prev) > 0 {
-			out = append(out, xdbSegment{start: prev, end: decIP(s.start), region: ""})
+			gapEnd := make([]byte, ipLen)
+			copy(gapEnd, s.start)
+			decIPInPlace(gapEnd)
+			out = append(out, xdbSegment{start: prev, end: gapEnd, region: ""})
 		}
 		out = append(out, s)
 		if bytes.Equal(s.end, maxIP) {
 			prev = nil // saturated: no more address space left
 		} else {
-			prev = incIP(s.end)
+			prev = make([]byte, ipLen)
+			copy(prev, s.end)
+			incIPInPlace(prev)
 		}
 	}
 	if prev != nil {
@@ -228,17 +233,17 @@ func writeXdb(dst string, version xdbVersion, segs []xdbSegment) error {
 		if _, ok := regionPool[seg.region]; ok {
 			continue
 		}
-		region := []byte(seg.region)
-		if len(region) > xdbMaxRegionSize {
+		if len(seg.region) > xdbMaxRegionSize {
 			f.Close()
-			return fmt.Errorf("region too long (%d bytes): %q", len(region), seg.region)
+			return fmt.Errorf("region too long (%d bytes): %q", len(seg.region), seg.region)
 		}
-		if _, err := w.Write(region); err != nil {
+		// WriteString avoids the []byte(seg.region) conversion alloc per region.
+		if _, err := w.WriteString(seg.region); err != nil {
 			f.Close()
 			return err
 		}
 		regionPool[seg.region] = uint32(offset)
-		offset += int64(len(region))
+		offset += int64(len(seg.region))
 	}
 
 	// Binary index segment: split segments on two-byte boundaries so the
@@ -333,24 +338,34 @@ func setVectorIndex(vectorIndex []byte, ip []byte, ptr uint32, indexSize int) {
 func incIP(ip []byte) []byte {
 	out := make([]byte, len(ip))
 	copy(out, ip)
-	for i := len(out) - 1; i >= 0; i-- {
-		out[i]++
-		if out[i] != 0 {
+	incIPInPlace(out)
+	return out
+}
+
+// incIPInPlace mutates ip to ip + 1 (wraps on overflow).
+func incIPInPlace(ip []byte) {
+	for i := len(ip) - 1; i >= 0; i-- {
+		ip[i]++
+		if ip[i] != 0 {
 			break
 		}
 	}
-	return out
 }
 
 // decIP returns ip - 1 (wraps on underflow).
 func decIP(ip []byte) []byte {
 	out := make([]byte, len(ip))
 	copy(out, ip)
-	for i := len(out) - 1; i >= 0; i-- {
-		out[i]--
-		if out[i] != 0xff {
+	decIPInPlace(out)
+	return out
+}
+
+// decIPInPlace mutates ip to ip - 1 (wraps on underflow).
+func decIPInPlace(ip []byte) {
+	for i := len(ip) - 1; i >= 0; i-- {
+		ip[i]--
+		if ip[i] != 0xff {
 			break
 		}
 	}
-	return out
 }
