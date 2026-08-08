@@ -46,32 +46,43 @@ func publishOfficialMmdb(source, destination string) error {
 		)
 	}
 
-	input, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer input.Close()
-
 	temp, err := os.CreateTemp(filepath.Dir(destination), "."+filepath.Base(destination)+"-*")
 	if err != nil {
 		return err
 	}
 	tempPath := temp.Name()
 	defer os.Remove(tempPath)
-
-	if _, err := io.Copy(temp, input); err != nil {
-		temp.Close()
-		return err
-	}
-	if err := temp.Chmod(0o644); err != nil {
-		temp.Close()
-		return err
-	}
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tempPath, destination); err != nil {
+	if err := os.Remove(tempPath); err != nil {
 		return err
 	}
-	return nil
+
+	// Source and release paths normally share dataDir, so a hard link publishes
+	// the official bytes without another 24 MB disk copy. Fall back for file
+	// systems that do not support hard links.
+	if err := os.Link(source, tempPath); err != nil {
+		if err := copyMmdb(source, tempPath); err != nil {
+			return err
+		}
+	}
+	return os.Rename(tempPath, destination)
+}
+
+func copyMmdb(source, destination string) error {
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(output, input); err != nil {
+		output.Close()
+		return err
+	}
+	return output.Close()
 }

@@ -16,7 +16,7 @@ func TestPublishOfficialMmdbPreservesBytesAndSchema(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, sourceMMDBName)
 	destination := filepath.Join(dir, "ipinfo-lite.mmdb")
-	if err := os.WriteFile(source, sourceBytes, 0o600); err != nil {
+	if err := os.WriteFile(source, sourceBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -31,6 +31,17 @@ func TestPublishOfficialMmdbPreservesBytesAndSchema(t *testing.T) {
 		t.Fatal("published MMDB differs from the official source bytes")
 	}
 	assertFileMode(t, destination, 0o644)
+	sourceInfo, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destinationInfo, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(sourceInfo, destinationInfo) {
+		t.Fatal("published MMDB did not use the same-filesystem hard-link fast path")
+	}
 
 	database, err := maxminddb.Open(destination)
 	if err != nil {
@@ -76,6 +87,21 @@ func TestPublishOfficialMmdbRejectsInvalidSource(t *testing.T) {
 		t.Fatal("publishOfficialMmdb accepted an invalid MMDB")
 	}
 	assertFileContent(t, destination, old)
+}
+
+func TestCopyMmdbFallbackPreservesBytes(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, sourceMMDBName)
+	destination := filepath.Join(dir, "copied.mmdb")
+	want := officialSampleMmdb(t)
+	if err := os.WriteFile(source, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyMmdb(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, destination, want)
 }
 
 // officialSampleMmdb loads the public fixture from
