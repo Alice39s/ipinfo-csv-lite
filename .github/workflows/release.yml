@@ -1,6 +1,7 @@
 name: Auto Release
 
 on:
+  pull_request:
   push:
     branches:
       - main
@@ -9,8 +10,28 @@ on:
     - cron: "0 12 * * *" # Every day at 12:00 UTC
 
 jobs:
-  release:
+  checks:
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run checks
+        run: make vet test
+
+  release:
+    if: github.event_name != 'pull_request'
+    needs: checks
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
     permissions:
       contents: write # create releases and upload assets
       id-token: write # sign artifact attestations
@@ -22,10 +43,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: stable
-
-      - name: Run checks
-        run: make vet test
+          go-version-file: go.mod
 
       - name: Export IPINFO_TOKEN
         run: echo "IPINFO_TOKEN=${{ secrets.IPINFO_TOKEN }}" >> "$GITHUB_ENV"
