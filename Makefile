@@ -4,7 +4,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all build update process release mmdb xdb checksum generate fmt vet test clean
+.PHONY: all build update process release mmdb xdb checksum generate version fmt vet test clean
 
 all: build
 	$(BINARY) all
@@ -34,6 +34,9 @@ checksum: build
 
 generate: build
 	$(BINARY) generate
+
+version:
+	@echo $(VERSION)
 
 fmt:
 	gofmt -w .

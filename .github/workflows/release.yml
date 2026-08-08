@@ -14,9 +14,8 @@ on:
         default: true
       tag:
         description: Pre-release tag (ignored for stable releases)
-        required: true
+        required: false
         type: string
-        default: 2.0.0-rc.1
   schedule:
     - cron: "0 12 * * *" # Every day at 12:00 UTC
 
@@ -28,10 +27,10 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -52,10 +51,10 @@ jobs:
       attestations: write # publish artifact attestations
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -70,15 +69,17 @@ jobs:
           PRERELEASE: ${{ inputs.prerelease }}
           REQUESTED_TAG: ${{ inputs.tag }}
         run: |
+          version="$(make --no-print-directory version)"
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$PRERELEASE" == "true" ]]; then
-            if [[ ! "$REQUESTED_TAG" =~ ^2\.0\.0-(alpha|beta|rc)\.[1-9][0-9]*$ ]]; then
+            escaped_version="${version//./\\.}"
+            if [[ ! "$REQUESTED_TAG" =~ ^${escaped_version}-(alpha|beta|rc)\.[1-9][0-9]*$ ]]; then
               echo "Invalid pre-release tag: $REQUESTED_TAG" >&2
               exit 1
             fi
             release_tag="$REQUESTED_TAG"
             prerelease=true
           else
-            release_tag="2.0.0-$(date +'%Y-%m-%d')"
+            release_tag="$version-$(date +'%Y-%m-%d')"
             prerelease=false
           fi
           {
@@ -111,6 +112,7 @@ jobs:
           prerelease: ${{ steps.tag.outputs.prerelease }}
           name: ${{ steps.tag.outputs.tag }}
           tag_name: ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: |
             LICENSE.DATABASE
             data/ipinfo-lite.csv
