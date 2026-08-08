@@ -53,36 +53,14 @@ type xdbSegment struct {
 func runXdb() error {
 	input := filepath.Join(dataDir, "ipinfo-lite.csv")
 
-	fIn, reader, err := openLiteCSV(input)
+	v4Segs, v6Segs, skipped, err := readLiteSegments(input)
 	if err != nil {
 		return err
 	}
-	defer fIn.Close()
+	return writeXdbSegments(v4Segs, v6Segs, skipped)
+}
 
-	var v4Segs, v6Segs []xdbSegment
-	for {
-		row, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		if len(row) < 5 || row[0] == "" {
-			continue
-		}
-
-		seg, version, err := parseSegment(row[0], row[1]+"|"+row[2]+"|"+row[3]+"|"+row[4])
-		if err != nil {
-			continue // skip unparsable CIDRs
-		}
-		if version.id == 4 {
-			v4Segs = append(v4Segs, seg)
-		} else {
-			v6Segs = append(v6Segs, seg)
-		}
-	}
-
+func writeXdbSegments(v4Segs, v6Segs []xdbSegment, skipped int) error {
 	// IPv4 and IPv6 files are independent; build them concurrently.
 	jobs := []struct {
 		name    string
@@ -105,7 +83,7 @@ func runXdb() error {
 				errs <- err
 				return
 			}
-			fmt.Printf("Wrote %s (%d segments)\n", output, len(segs))
+			fmt.Printf("Wrote %s (%d segments, %d skipped)\n", output, len(segs), skipped)
 		}()
 	}
 	wg.Wait()
@@ -117,24 +95,112 @@ func runXdb() error {
 	return nil
 }
 
+// readLiteSegments parses the reduced CSV into XDB ranges. Consecutive source
+// networks with the same region are coalesced immediately, before sorting and
+// gap filling, which substantially lowers peak memory on the IPinfo dataset.
+func readLiteSegments(input string) (v4Segs, v6Segs []xdbSegment, skipped int, err error) {
+	fIn, reader, err := openLiteCSV(input, true)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	defer fIn.Close()
+
+	generator := xdbGenerator{}
+	for {
+		row, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, nil, skipped, err
+		}
+		generator.addRow(row)
+	}
+	return generator.v4, generator.v6, generator.skipped, nil
+}
+
+type xdbGenerator struct {
+	v4, v6        []xdbSegment
+	skipped       int
+	lastFields    [4]string
+	lastRegion    string
+	hasLastRegion bool
+}
+
+func (g *xdbGenerator) addRow(row []string) {
+	if len(row) < 5 || row[0] == "" {
+		g.skipped++
+		return
+	}
+	fields := [4]string{row[1], row[2], row[3], row[4]}
+	region := g.lastRegion
+	if !g.hasLastRegion || fields != g.lastFields {
+		region = row[1] + "|" + row[2] + "|" + row[3] + "|" + row[4]
+		g.lastFields = fields
+		g.lastRegion = region
+		g.hasLastRegion = true
+	}
+	seg, version, err := parseSegment(row[0], region)
+	if err != nil {
+		g.skipped++
+		return
+	}
+	if version.id == 4 {
+		g.v4 = appendAdjacentSegment(g.v4, seg)
+	} else {
+		g.v6 = appendAdjacentSegment(g.v6, seg)
+	}
+}
+
+func writeXdbBatches(rows <-chan [][]string) error {
+	generator := xdbGenerator{}
+	for batch := range rows {
+		for _, row := range batch {
+			generator.addRow(row)
+		}
+	}
+	return writeXdbSegments(generator.v4, generator.v6, generator.skipped)
+}
+
+func appendAdjacentSegment(segs []xdbSegment, seg xdbSegment) []xdbSegment {
+	if len(segs) == 0 {
+		return append(segs, seg)
+	}
+	last := &segs[len(segs)-1]
+	if last.region == seg.region && adjacentIPs(last.end, seg.start) {
+		last.end = seg.end
+		return segs
+	}
+	return append(segs, seg)
+}
+
+func adjacentIPs(left, right []byte) bool {
+	carry := byte(1)
+	for i := len(left) - 1; i >= 0; i-- {
+		value := left[i] + carry
+		if value != right[i] {
+			return false
+		}
+		if value != 0 {
+			carry = 0
+		}
+	}
+	return carry == 0
+}
+
 // parseSegment converts a CIDR into an xdbSegment covering the full prefix range.
 // Plain IP addresses (treated as /32 or /128) are accepted since they occur
 // in the source data.
 func parseSegment(cidr, region string) (xdbSegment, xdbVersion, error) {
-	p, err := netip.ParsePrefix(cidr)
+	p, err := parseLitePrefix(cidr)
 	if err != nil {
-		addr, addrErr := netip.ParseAddr(cidr)
-		if addrErr != nil {
-			return xdbSegment{}, xdbVersion{}, err
-		}
-		bits := 128
-		if addr.Is4() {
-			bits = 32
-		}
-		p = netip.PrefixFrom(addr, bits)
+		return xdbSegment{}, xdbVersion{}, err
 	}
-	p = p.Masked()
+	seg, version := segmentFromPrefix(p, region)
+	return seg, version, nil
+}
 
+func segmentFromPrefix(p netip.Prefix, region string) (xdbSegment, xdbVersion) {
 	version := xdbIPv6
 	var start []byte
 	if p.Addr().Is4() {
@@ -152,7 +218,7 @@ func parseSegment(cidr, region string) (xdbSegment, xdbVersion, error) {
 		end[i/8] |= 1 << (7 - uint(i%8))
 	}
 
-	return xdbSegment{start: start, end: end, region: region}, version, nil
+	return xdbSegment{start: start, end: end, region: region}, version
 }
 
 // fillGaps sorts segments and inserts empty-region segments so the result is
@@ -163,7 +229,18 @@ func fillGaps(segs []xdbSegment, ipLen int) []xdbSegment {
 	})
 
 	maxIP := bytes.Repeat([]byte{0xff}, ipLen)
-	var out []xdbSegment
+	out := make([]xdbSegment, 0, len(segs)+1)
+	// Every segment appended below starts immediately after the previous one.
+	// Coalesce equal neighbouring regions while that invariant is explicit;
+	// keeping millions of redundant boundaries only bloats both the binary
+	// index and the amount of work done by downstream writers.
+	appendContinuous := func(s xdbSegment) {
+		if n := len(out); n > 0 && out[n-1].region == s.region {
+			out[n-1].end = s.end
+			return
+		}
+		out = append(out, s)
+	}
 	prev := make([]byte, ipLen) // next expected start, all zeros initially
 	for _, s := range segs {
 		if prev == nil || bytes.Compare(s.end, prev) < 0 {
@@ -176,9 +253,9 @@ func fillGaps(segs []xdbSegment, ipLen int) []xdbSegment {
 			gapEnd := make([]byte, ipLen)
 			copy(gapEnd, s.start)
 			decIPInPlace(gapEnd)
-			out = append(out, xdbSegment{start: prev, end: gapEnd, region: ""})
+			appendContinuous(xdbSegment{start: prev, end: gapEnd, region: ""})
 		}
-		out = append(out, s)
+		appendContinuous(s)
 		if bytes.Equal(s.end, maxIP) {
 			prev = nil // saturated: no more address space left
 		} else {
@@ -188,7 +265,7 @@ func fillGaps(segs []xdbSegment, ipLen int) []xdbSegment {
 		}
 	}
 	if prev != nil {
-		out = append(out, xdbSegment{start: prev, end: maxIP, region: ""})
+		appendContinuous(xdbSegment{start: prev, end: maxIP, region: ""})
 	}
 	return out
 }
@@ -228,7 +305,7 @@ func writeXdb(dst string, version xdbVersion, segs []xdbSegment) error {
 	offset := int64(xdbHeaderLength + xdbVectorLength)
 
 	// Region data segment: deduplicated, each unique region written once.
-	regionPool := make(map[string]uint32)
+	regionPool := make(map[string]uint32, 1<<17)
 	for _, seg := range segs {
 		if _, ok := regionPool[seg.region]; ok {
 			continue
@@ -257,9 +334,21 @@ func writeXdb(dst string, version xdbVersion, segs []xdbSegment) error {
 			return fmt.Errorf("missing ptr cache for region %q", seg.region)
 		}
 
-		for _, s := range seg.split() {
-			version.putIP(item[0:], s.start)
-			version.putIP(item[version.ipLen:], s.end)
+		cur := seg.start
+		for {
+			end := seg.end
+			lastPart := cur[0] == seg.end[0] && cur[1] == seg.end[1]
+			if !lastPart {
+				blockEnd := make([]byte, version.ipLen)
+				blockEnd[0], blockEnd[1] = cur[0], cur[1]
+				for i := 2; i < len(blockEnd); i++ {
+					blockEnd[i] = 0xff
+				}
+				end = blockEnd
+			}
+
+			version.putIP(item[0:], cur)
+			version.putIP(item[version.ipLen:], end)
 			binary.LittleEndian.PutUint16(item[2*version.ipLen:], uint16(len(seg.region)))
 			binary.LittleEndian.PutUint32(item[2*version.ipLen+2:], ptr)
 			if _, err := w.Write(item); err != nil {
@@ -267,12 +356,16 @@ func writeXdb(dst string, version xdbVersion, segs []xdbSegment) error {
 				return err
 			}
 
-			setVectorIndex(vectorIndex, s.start, uint32(offset), version.indexSize)
+			setVectorIndex(vectorIndex, cur, uint32(offset), version.indexSize)
 			endIndexPtr = offset
 			if startIndexPtr == -1 {
 				startIndexPtr = offset
 			}
 			offset += int64(version.indexSize)
+			if lastPart {
+				break
+			}
+			cur = incIP(end)
 		}
 	}
 

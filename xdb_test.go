@@ -227,6 +227,7 @@ func TestIncDecIP(t *testing.T) {
 func TestFillGaps(t *testing.T) {
 	segs := fillGaps([]xdbSegment{
 		mustSegment(t, "8.8.8.0/24", "A"),
+		mustSegment(t, "1.0.1.0/24", "B"),
 		mustSegment(t, "1.0.0.0/24", "B"), // unsorted on purpose
 	}, xdbIPv4.ipLen)
 
@@ -241,5 +242,8 @@ func TestFillGaps(t *testing.T) {
 		if want := incIP(segs[i-1].end); !bytes.Equal(segs[i].start, want) {
 			t.Fatalf("gap/overlap between segment %d and %d", i-1, i)
 		}
+	}
+	if !bytes.Equal(segs[1].start, []byte{1, 0, 0, 0}) || !bytes.Equal(segs[1].end, []byte{1, 0, 1, 255}) {
+		t.Fatalf("equal adjacent regions were not coalesced: %v-%v", segs[1].start, segs[1].end)
 	}
 }

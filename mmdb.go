@@ -1,190 +1,510 @@
 package main
 
 import (
+	"bufio"
+	"encoding/binary"
 	"fmt"
 	"io"
-	"net"
+	"math/bits"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
-
-	"github.com/maxmind/mmdbwriter"
-	"github.com/maxmind/mmdbwriter/mmdbtype"
+	"time"
 )
 
-// runMmdb converts data/ipinfo-lite.csv into a MaxMind DB file at
-// data/ipinfo-lite.mmdb. The record structure is our own:
-//
-//	{
-//	  "country_code":   "US",        // omitted when empty
-//	  "continent_code": "NA",        // omitted when empty
-//	  "as_number":      15169,       // uint32, always present
-//	  "as_name":        "Google LLC" // omitted when empty
-//	}
+const (
+	mmdbRecordSize        = 28
+	mmdbDataSeparatorSize = 16
+	mmdbNodeRef           = uint32(1 << 30)
+	mmdbDataRef           = uint32(2 << 30)
+	mmdbRefMask           = uint32(3 << 30)
+	mmdbValueMask         = ^mmdbRefMask
+)
+
+var mmdbMetadataMarker = []byte("\xAB\xCD\xEFMaxMind.com")
+
+// runMmdb converts data/ipinfo-lite.csv into a MaxMind DB file. This writer is
+// specialized for the pipeline's fixed flat record shape and IPv6 search tree;
+// avoiding a generic per-prefix object tree keeps multi-million-row builds fast.
 func runMmdb() error {
 	input := filepath.Join(dataDir, "ipinfo-lite.csv")
 	output := filepath.Join(dataDir, "ipinfo-lite.mmdb")
 
-	fIn, reader, err := openLiteCSV(input)
+	inserted, skipped, err := writeMmdb(input, output, time.Now().Unix())
 	if err != nil {
 		return err
 	}
-	defer fIn.Close()
-
-	tree, err := mmdbwriter.New(mmdbwriter.Options{
-		DatabaseType:            "ipinfo-lite",
-		Description:             map[string]string{"en": "IPinfo lite geolocation database (country + continent + ASN)"},
-		Languages:               []string{"en"},
-		RecordSize:              28,
-		IPVersion:               6, // IPv6 tree holds both IPv4 and IPv6 networks
-		IncludeReservedNetworks: true,
-		KeyGenerator:            keyGenFunc(recordKey),
-	})
-	if err != nil {
-		return err
-	}
-
-	var inserted, skipped int
-	// The 3.47M source rows collapse to only ~120k unique records; build each
-	// mmdbtype.Map once and reuse it. mmdbwriter's dataMap already dedups the
-	// serialized record, so reusing one Map object across many inserts is safe
-	// (the default inserter never mutates the value it receives) and removes
-	// ~1.2 GB of per-row Map allocations plus the associated GC churn.
-	records := make(map[string]mmdbtype.Map, 1<<17)
-	for {
-		row, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-
-		key, ok := recordDedupKey(row)
-		if !ok {
-			skipped++
-			continue
-		}
-		// Reuse the Map for every network that shares this record tuple;
-		// only build it on the first sighting.
-		rec, hit := records[key]
-		if !hit {
-			rec = buildMmdbRecord(row)
-			records[key] = rec
-		}
-		network, err := parseNetwork(row[0])
-		if err != nil {
-			skipped++
-			continue
-		}
-		if err := tree.Insert(network, rec); err != nil {
-			return fmt.Errorf("insert %s: %w", row[0], err)
-		}
-		inserted++
-	}
-
-	fOut, err := os.Create(output)
-	if err != nil {
-		return err
-	}
-	if _, err := tree.WriteTo(fOut); err != nil {
-		fOut.Close()
-		return fmt.Errorf("write %s: %w", output, err)
-	}
-	if err := fOut.Close(); err != nil {
-		return err
-	}
-
 	fmt.Printf("Wrote %s (%d networks, %d skipped)\n", output, inserted, skipped)
 	return nil
 }
 
-// keyGenFunc adapts a function to the mmdbwriter.KeyGenerator interface.
-type keyGenFunc func(mmdbtype.DataType) ([]byte, error)
+type mmdbRecord struct {
+	countryCode   string
+	continentCode string
+	asNumber      uint32
+	asName        string
+}
 
-func (f keyGenFunc) Key(v mmdbtype.DataType) ([]byte, error) { return f(v) }
+type mmdbNode struct {
+	child [2]uint32
+}
 
-// recordKey generates the dedup key for our flat record structure directly,
-// avoiding the default serializer+SHA-256 key generator which is slow for
-// millions of inserts. Fields are joined with NUL separators (never present
-// in CSV values), so distinct records always produce distinct keys.
-func recordKey(v mmdbtype.DataType) ([]byte, error) {
-	m, ok := v.(mmdbtype.Map)
-	if !ok {
-		return nil, fmt.Errorf("unexpected record type %T", v)
+type mmdbBuilder struct {
+	nodes   []mmdbNode
+	data    []byte
+	records map[mmdbRecord]uint32
+	strings map[string]uint32
+}
+
+func newMmdbBuilder() *mmdbBuilder {
+	b := &mmdbBuilder{
+		nodes:   make([]mmdbNode, 1, 1<<21),
+		data:    make([]byte, 0, 1<<24),
+		records: make(map[mmdbRecord]uint32, 1<<17),
+		strings: make(map[string]uint32, 1<<17),
 	}
-	key := make([]byte, 0, 64)
-	for _, field := range []string{"country_code", "continent_code", "as_number", "as_name"} {
-		switch value := m[mmdbtype.String(field)].(type) {
-		case mmdbtype.String:
-			key = append(key, value...)
-		case mmdbtype.Uint32:
-			key = strconv.AppendUint(key, uint64(value), 10)
+	// Store the fixed field names once. Every record points back to these four
+	// scalars, avoiding several megabytes of repeated map-key bytes.
+	for _, field := range []string{"as_name", "as_number", "continent_code", "country_code"} {
+		b.strings[field] = uint32(len(b.data))
+		b.data = appendMmdbString(b.data, field)
+	}
+	return b
+}
+
+func writeMmdb(input, output string, buildEpoch int64) (inserted, skipped int, err error) {
+	fIn, reader, err := openLiteCSV(input, true)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer fIn.Close()
+
+	generator := newMmdbGenerator()
+	for {
+		row, readErr := reader.Read()
+		if readErr == io.EOF {
+			break
 		}
-		key = append(key, 0)
+		if readErr != nil {
+			return inserted, skipped, readErr
+		}
+		if err := generator.addRow(row); err != nil {
+			return generator.inserted, generator.skipped, err
+		}
 	}
-	return key, nil
+	err = generator.writeTo(output, buildEpoch)
+	return generator.inserted, generator.skipped, err
 }
 
-// parseNetwork parses a CIDR, tolerating plain IP addresses (treated as
-// /32 or /128) which occur in the source data.
-func parseNetwork(cidr string) (*net.IPNet, error) {
-	if _, network, err := net.ParseCIDR(cidr); err == nil {
-		return network, nil
-	}
-	ip := net.ParseIP(cidr)
-	if ip == nil {
-		return nil, fmt.Errorf("invalid network %q", cidr)
-	}
-	bits := 128
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
-		bits = 32
-	}
-	return &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}, nil
+type mmdbGenerator struct {
+	builder           *mmdbBuilder
+	inserted, skipped int
+	lastAddress       [16]byte
+	lastBits          int
+	path              [129]uint32
+	hasLast           bool
 }
 
-// recordDedupKey validates a lite CSV row (cidr, country_code, continent_code,
-// as_number, as_name) and returns a stable key over its four output fields.
-// ok is false for malformed rows (too few columns or empty network). The key
-// lets runMmdb build one mmdbtype.Map per unique record instead of per row.
-// Fields are NUL-separated; NUL never appears in CSV cell values.
-func recordDedupKey(row []string) (string, bool) {
+func newMmdbGenerator() *mmdbGenerator {
+	return &mmdbGenerator{builder: newMmdbBuilder()}
+}
+
+func (g *mmdbGenerator) addRow(row []string) error {
 	if len(row) < 5 || row[0] == "" {
-		return "", false
+		g.skipped++
+		return nil
 	}
-	return row[1] + "\x00" + row[2] + "\x00" + row[3] + "\x00" + row[4], true
+	prefix, err := parseLitePrefix(row[0])
+	if err != nil {
+		g.skipped++
+		return nil
+	}
+	record := mmdbRecordFromRow(row)
+	if err := g.insertSorted(prefix, g.builder.recordRef(record)); err != nil {
+		return fmt.Errorf("insert %s: %w", row[0], err)
+	}
+	g.inserted++
+	return nil
 }
 
-// buildMmdbRecord constructs the mmdbtype.Map for a validated row. Empty
-// optional fields are omitted; as_number is always present (uint32).
-func buildMmdbRecord(row []string) mmdbtype.Map {
+// insertSorted caches the node path shared with the previous prefix. IPinfo's
+// rows are address-sorted, so adjacent networks commonly share most leading
+// bits; avoiding a fresh root traversal for every row saves millions of node
+// lookups. Overlapping prefixes conservatively restart at the root.
+func (g *mmdbGenerator) insertSorted(prefix netip.Prefix, value uint32) error {
+	addr, prefixBits := mmdbAddress(prefix)
+	if prefixBits == 0 {
+		g.builder.nodes[0].child = [2]uint32{value, value}
+		g.hasLast = false
+		return nil
+	}
+
+	startDepth := 0
+	if g.hasLast {
+		common := commonPrefixBits(g.lastAddress, addr)
+		if common < min(g.lastBits, prefixBits) {
+			startDepth = min(common, g.lastBits-1, prefixBits-1)
+		}
+	}
+	nodeIndex := g.path[startDepth]
+	for depth := startDepth; depth < prefixBits; depth++ {
+		bit := (addr[depth/8] >> (7 - uint(depth%8))) & 1
+		if depth == prefixBits-1 {
+			g.builder.nodes[nodeIndex].child[bit] = value
+			break
+		}
+
+		child := g.builder.nodes[nodeIndex].child[bit]
+		parent := nodeIndex
+		switch child & mmdbRefMask {
+		case mmdbNodeRef:
+			nodeIndex = child & mmdbValueMask
+		case mmdbDataRef:
+			nodeIndex = g.builder.appendNode(mmdbNode{child: [2]uint32{child, child}})
+			g.builder.nodes[parent].child[bit] = mmdbNodeRef | nodeIndex
+		default:
+			nodeIndex = g.builder.appendNode(mmdbNode{})
+			g.builder.nodes[parent].child[bit] = mmdbNodeRef | nodeIndex
+		}
+		g.path[depth+1] = nodeIndex
+	}
+	g.lastAddress = addr
+	g.lastBits = prefixBits
+	g.hasLast = true
+	return nil
+}
+
+func commonPrefixBits(a, b [16]byte) int {
+	for i := range a {
+		if a[i] != b[i] {
+			return i*8 + bits.LeadingZeros8(a[i]^b[i])
+		}
+	}
+	return 128
+}
+
+func (g *mmdbGenerator) writeTo(output string, buildEpoch int64) error {
+	if err := g.builder.addIPv4Aliases(); err != nil {
+		return err
+	}
+	return g.builder.writeTo(output, buildEpoch)
+}
+
+func writeMmdbBatches(rows <-chan [][]string, output string, buildEpoch int64) (inserted, skipped int, err error) {
+	generator := newMmdbGenerator()
+	for batch := range rows {
+		for _, row := range batch {
+			if err := generator.addRow(row); err != nil {
+				return generator.inserted, generator.skipped, err
+			}
+		}
+	}
+	err = generator.writeTo(output, buildEpoch)
+	return generator.inserted, generator.skipped, err
+}
+
+func mmdbRecordFromRow(row []string) mmdbRecord {
 	asNumber, err := strconv.ParseUint(row[3], 10, 32)
 	if err != nil {
 		asNumber = 0
 	}
-	record := mmdbtype.Map{
-		"as_number": mmdbtype.Uint32(asNumber),
+	return mmdbRecord{
+		countryCode:   row[1],
+		continentCode: row[2],
+		asNumber:      uint32(asNumber),
+		asName:        row[4],
 	}
-	if row[1] != "" {
-		record["country_code"] = mmdbtype.String(row[1])
-	}
-	if row[2] != "" {
-		record["continent_code"] = mmdbtype.String(row[2])
-	}
-	if row[4] != "" {
-		record["as_name"] = mmdbtype.String(row[4])
-	}
-	return record
 }
 
-// mmdbRecord is a convenience wrapper combining recordDedupKey and
-// buildMmdbRecord, used by tests. Production code (runMmdb) splits them so it
-// can skip the Map allocation on cache hits.
-func mmdbRecord(row []string) (record mmdbtype.Map, key string, ok bool) {
-	key, ok = recordDedupKey(row)
-	if !ok {
-		return nil, "", false
+func (b *mmdbBuilder) recordRef(record mmdbRecord) uint32 {
+	if offset, ok := b.records[record]; ok {
+		return mmdbDataRef | offset
 	}
-	return buildMmdbRecord(row), key, true
+	offset := uint32(len(b.data))
+	b.appendRecord(record)
+	b.records[record] = offset
+	return mmdbDataRef | offset
+}
+
+func (b *mmdbBuilder) insert(prefix netip.Prefix, value uint32) error {
+	addr, bits := mmdbAddress(prefix)
+	if bits == 0 {
+		b.nodes[0].child = [2]uint32{value, value}
+		return nil
+	}
+
+	nodeIndex := uint32(0)
+	for depth := range bits {
+		bit := (addr[depth/8] >> (7 - uint(depth%8))) & 1
+		if depth == bits-1 {
+			b.nodes[nodeIndex].child[bit] = value
+			return nil
+		}
+
+		child := b.nodes[nodeIndex].child[bit]
+		switch child & mmdbRefMask {
+		case mmdbNodeRef:
+			nodeIndex = child & mmdbValueMask
+		case mmdbDataRef:
+			parent := nodeIndex
+			nodeIndex = b.appendNode(mmdbNode{child: [2]uint32{child, child}})
+			b.nodes[parent].child[bit] = mmdbNodeRef | nodeIndex
+		default:
+			parent := nodeIndex
+			nodeIndex = b.appendNode(mmdbNode{})
+			b.nodes[parent].child[bit] = mmdbNodeRef | nodeIndex
+		}
+	}
+	return nil
+}
+
+func (b *mmdbBuilder) appendNode(node mmdbNode) uint32 {
+	index := uint32(len(b.nodes))
+	b.nodes = append(b.nodes, node)
+	return index
+}
+
+func mmdbAddress(prefix netip.Prefix) (addr [16]byte, bits int) {
+	if prefix.Addr().Is4() {
+		v4 := prefix.Addr().As4()
+		copy(addr[12:], v4[:])
+		return addr, prefix.Bits() + 96
+	}
+	return prefix.Addr().As16(), prefix.Bits()
+}
+
+func (b *mmdbBuilder) addIPv4Aliases() error {
+	v4Root, err := b.refAtPrefix(netip.MustParsePrefix("::/96"))
+	if err != nil || v4Root == 0 {
+		return err
+	}
+	for _, alias := range []string{"::ffff:0:0/96", "2001::/32", "2002::/16"} {
+		if err := b.insert(netip.MustParsePrefix(alias), v4Root); err != nil {
+			return fmt.Errorf("insert IPv4 alias %s: %w", alias, err)
+		}
+	}
+	return nil
+}
+
+func (b *mmdbBuilder) refAtPrefix(prefix netip.Prefix) (uint32, error) {
+	addr, bits := mmdbAddress(prefix)
+	if bits == 0 {
+		return mmdbNodeRef, nil
+	}
+	nodeIndex := uint32(0)
+	for depth := range bits {
+		bit := (addr[depth/8] >> (7 - uint(depth%8))) & 1
+		ref := b.nodes[nodeIndex].child[bit]
+		if depth == bits-1 || ref&mmdbRefMask != mmdbNodeRef {
+			return ref, nil
+		}
+		nodeIndex = ref & mmdbValueMask
+	}
+	return 0, nil
+}
+
+func (b *mmdbBuilder) writeTo(path string, buildEpoch int64) error {
+	nodeCount := uint32(len(b.nodes))
+	maxPointer := uint64(nodeCount) + mmdbDataSeparatorSize + uint64(len(b.data))
+	if maxPointer >= 1<<mmdbRecordSize {
+		return fmt.Errorf("MMDB exceeds %d-bit record capacity", mmdbRecordSize)
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	w := bufio.NewWriterSize(f, 1<<20)
+	fail := func(err error) error {
+		_ = f.Close()
+		return err
+	}
+
+	var encoded [7]byte
+	for _, node := range b.nodes {
+		left := b.resolveRef(node.child[0], nodeCount)
+		right := b.resolveRef(node.child[1], nodeCount)
+		encodeMmdbNode(encoded[:], left, right)
+		if _, err := w.Write(encoded[:]); err != nil {
+			return fail(err)
+		}
+	}
+	if _, err := w.Write(make([]byte, mmdbDataSeparatorSize)); err != nil {
+		return fail(err)
+	}
+	if _, err := w.Write(b.data); err != nil {
+		return fail(err)
+	}
+	if _, err := w.Write(mmdbMetadataMarker); err != nil {
+		return fail(err)
+	}
+	if _, err := w.Write(appendMmdbMetadata(nil, nodeCount, buildEpoch)); err != nil {
+		return fail(err)
+	}
+	if err := w.Flush(); err != nil {
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (b *mmdbBuilder) resolveRef(ref, nodeCount uint32) uint32 {
+	switch ref & mmdbRefMask {
+	case mmdbNodeRef:
+		return ref & mmdbValueMask
+	case mmdbDataRef:
+		return nodeCount + mmdbDataSeparatorSize + ref&mmdbValueMask
+	default:
+		return nodeCount
+	}
+}
+
+func encodeMmdbNode(dst []byte, left, right uint32) {
+	dst[0] = byte(left >> 16)
+	dst[1] = byte(left >> 8)
+	dst[2] = byte(left)
+	dst[3] = byte((left>>24)<<4 | right>>24)
+	dst[4] = byte(right >> 16)
+	dst[5] = byte(right >> 8)
+	dst[6] = byte(right)
+}
+
+func (b *mmdbBuilder) appendRecord(record mmdbRecord) {
+	fields := 1
+	if record.asName != "" {
+		fields++
+	}
+	if record.continentCode != "" {
+		fields++
+	}
+	if record.countryCode != "" {
+		fields++
+	}
+	b.data = appendMmdbControl(b.data, 7, fields)
+	if record.asName != "" {
+		b.data = appendMmdbPointer(b.data, b.strings["as_name"])
+		b.appendString(record.asName)
+	}
+	b.data = appendMmdbPointer(b.data, b.strings["as_number"])
+	b.data = appendMmdbUint(b.data, 6, uint64(record.asNumber))
+	if record.continentCode != "" {
+		b.data = appendMmdbPointer(b.data, b.strings["continent_code"])
+		b.appendString(record.continentCode)
+	}
+	if record.countryCode != "" {
+		b.data = appendMmdbPointer(b.data, b.strings["country_code"])
+		b.appendString(record.countryCode)
+	}
+}
+
+func (b *mmdbBuilder) appendString(value string) {
+	if offset, ok := b.strings[value]; ok && mmdbPointerSize(offset) < len(value)+1 {
+		b.data = appendMmdbPointer(b.data, offset)
+		return
+	}
+	if _, ok := b.strings[value]; !ok {
+		b.strings[value] = uint32(len(b.data))
+	}
+	b.data = appendMmdbString(b.data, value)
+}
+
+func mmdbPointerSize(offset uint32) int {
+	switch {
+	case offset < 1<<11:
+		return 2
+	case offset < (1<<11)+(1<<19):
+		return 3
+	case offset < (1<<11)+(1<<19)+(1<<27):
+		return 4
+	default:
+		return 5
+	}
+}
+
+func appendMmdbPointer(dst []byte, offset uint32) []byte {
+	switch {
+	case offset < 1<<11:
+		return append(dst, 0x20|byte(offset>>8), byte(offset))
+	case offset < (1<<11)+(1<<19):
+		value := offset - (1 << 11)
+		return append(dst, 0x28|byte(value>>16), byte(value>>8), byte(value))
+	case offset < (1<<11)+(1<<19)+(1<<27):
+		value := offset - (1 << 11) - (1 << 19)
+		return append(dst, 0x30|byte(value>>24), byte(value>>16), byte(value>>8), byte(value))
+	default:
+		return append(dst, 0x38, byte(offset>>24), byte(offset>>16), byte(offset>>8), byte(offset))
+	}
+}
+
+func appendMmdbMetadata(dst []byte, nodeCount uint32, buildEpoch int64) []byte {
+	dst = appendMmdbControl(dst, 7, 9)
+	dst = appendMmdbString(dst, "binary_format_major_version")
+	dst = appendMmdbUint(dst, 5, 2)
+	dst = appendMmdbString(dst, "binary_format_minor_version")
+	dst = appendMmdbUint(dst, 5, 0)
+	dst = appendMmdbString(dst, "build_epoch")
+	dst = appendMmdbUint(dst, 9, uint64(buildEpoch))
+	dst = appendMmdbString(dst, "database_type")
+	dst = appendMmdbString(dst, "ipinfo-lite")
+	dst = appendMmdbString(dst, "description")
+	dst = appendMmdbControl(dst, 7, 1)
+	dst = appendMmdbString(dst, "en")
+	dst = appendMmdbString(dst, "IPinfo lite geolocation database (country + continent + ASN)")
+	dst = appendMmdbString(dst, "ip_version")
+	dst = appendMmdbUint(dst, 5, 6)
+	dst = appendMmdbString(dst, "languages")
+	dst = appendMmdbControl(dst, 11, 1)
+	dst = appendMmdbString(dst, "en")
+	dst = appendMmdbString(dst, "node_count")
+	dst = appendMmdbUint(dst, 6, uint64(nodeCount))
+	dst = appendMmdbString(dst, "record_size")
+	return appendMmdbUint(dst, 5, mmdbRecordSize)
+}
+
+func appendMmdbString(dst []byte, value string) []byte {
+	dst = appendMmdbControl(dst, 2, len(value))
+	return append(dst, value...)
+}
+
+func appendMmdbUint(dst []byte, typeNumber byte, value uint64) []byte {
+	size := 0
+	for remaining := value; remaining != 0; remaining >>= 8 {
+		size++
+	}
+	dst = appendMmdbControl(dst, typeNumber, size)
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], value)
+	return append(dst, encoded[len(encoded)-size:]...)
+}
+
+func appendMmdbControl(dst []byte, typeNumber byte, size int) []byte {
+	first := byte(0)
+	if typeNumber < 8 {
+		first = typeNumber << 5
+	}
+	remaining, remainingSize := 0, 0
+	switch {
+	case size < 29:
+		first |= byte(size)
+	case size < 285:
+		first |= 29
+		remaining, remainingSize = size-29, 1
+	case size < 65821:
+		first |= 30
+		remaining, remainingSize = size-285, 2
+	default:
+		first |= 31
+		remaining, remainingSize = size-65821, 3
+	}
+	dst = append(dst, first)
+	if typeNumber >= 8 {
+		dst = append(dst, typeNumber-7)
+	}
+	for i := remainingSize - 1; i >= 0; i-- {
+		dst = append(dst, byte(remaining>>(8*i)))
+	}
+	return dst
 }

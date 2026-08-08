@@ -23,10 +23,16 @@ const processChunkSize = 20000
 //
 // Output columns: cidr, country_code, continent_code, as_number, as_name
 func runProcess() error {
+	return runProcessWithConsumer(nil)
+}
+
+type processBatchConsumer func([][]string) error
+
+func runProcessWithConsumer(consume processBatchConsumer) error {
 	input := filepath.Join(dataDir, "country_asn.csv")
 	output := filepath.Join(dataDir, "ipinfo-lite.csv")
 
-	fIn, reader, err := openLiteCSV(input)
+	fIn, reader, err := openLiteCSV(input, false)
 	if err != nil {
 		return err
 	}
@@ -43,7 +49,7 @@ func runProcess() error {
 		return err
 	}
 
-	if err := transformCSV(reader, writer, runtime.NumCPU()); err != nil {
+	if err := transformCSVWithConsumer(reader, writer, runtime.NumCPU(), consume); err != nil {
 		fOut.Close()
 		return err
 	}
@@ -64,6 +70,10 @@ func runProcess() error {
 // transformCSV reads rows from reader, transforms them in parallel workers
 // and writes the results to writer in the original row order.
 func transformCSV(reader *csv.Reader, writer *csv.Writer, workers int) error {
+	return transformCSVWithConsumer(reader, writer, workers, nil)
+}
+
+func transformCSVWithConsumer(reader *csv.Reader, writer *csv.Writer, workers int, consume processBatchConsumer) error {
 	if workers < 1 {
 		workers = 1
 	}
@@ -120,6 +130,8 @@ func transformCSV(reader *csv.Reader, writer *csv.Writer, workers int) error {
 				if writeErr == nil {
 					if err := writer.WriteAll(rows); err != nil {
 						writeErr = err
+					} else if consume != nil {
+						writeErr = consume(rows)
 					}
 				}
 				delete(pending, nextWrite)
