@@ -106,7 +106,7 @@ jobs:
       # "Enable release immutability"); once enabled, publishing locks the
       # tag and assets. GITHUB_TOKEN cannot toggle it from a workflow.
       - name: Create draft release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           prerelease: ${{ steps.tag.outputs.prerelease }}
@@ -131,12 +131,15 @@ jobs:
             - ipinfo-lite.csv.gz (gzip compressed)
             - ipinfo-lite.csv.xz (xz compressed)
             - ipinfo-lite.csv.zst (zstd compressed)
-            - ipinfo-lite.mmdb (MaxMind DB)
+            - ipinfo-lite.mmdb (unchanged official IPinfo Lite MMDB)
             - ipinfo-lite.ipv4.xdb / ipinfo-lite.ipv6.xdb (ip2region xdb)
             - checksums.txt (SHA-256 of all artifacts)
 
             All artifacts carry Sigstore build-provenance attestations;
             verify with `gh attestation verify <file> --repo Alice39s/ipinfo-csv-lite`.
+
+            IP address data is powered by https://ipinfo.io/lite and licensed
+            under CC BY-SA 4.0; see LICENSE.DATABASE.
 
       - name: Publish release
         env:
