@@ -18,10 +18,10 @@ import (
 //
 //	| Header 256B | Vector index 512 KiB | Region data | Binary index |
 //
-// All multi-byte integer fields are little-endian; IP byte arrays stay in
-// big-endian network order.
+// All multi-byte integer fields are little-endian. IPv4 binary-index addresses
+// retain the legacy little-endian layout; IPv6 uses network byte order.
 const (
-	xdbVersionNo     = 2
+	xdbVersionNo     = 3
 	xdbIndexPolicy   = 1 // vector index cache policy
 	xdbHeaderLength  = 256
 	xdbVectorCols    = 256
@@ -258,8 +258,8 @@ func writeXdb(dst string, version xdbVersion, segs []xdbSegment) error {
 		}
 
 		for _, s := range seg.split() {
-			copy(item[0:], s.start)
-			copy(item[version.ipLen:], s.end)
+			version.putIP(item[0:], s.start)
+			version.putIP(item[version.ipLen:], s.end)
 			binary.LittleEndian.PutUint16(item[2*version.ipLen:], uint16(len(seg.region)))
 			binary.LittleEndian.PutUint32(item[2*version.ipLen+2:], ptr)
 			if _, err := w.Write(item); err != nil {
@@ -297,6 +297,19 @@ func writeXdb(dst string, version xdbVersion, segs []xdbSegment) error {
 	}
 
 	return f.Close()
+}
+
+// putIP encodes an address for the binary index. XDB v3 preserves the legacy
+// little-endian IPv4 layout for compatibility with v2 searchers; IPv6 follows
+// network byte order. Vector-index selection still uses the original bytes.
+func (v xdbVersion) putIP(dst, ip []byte) {
+	if v.id == 4 {
+		for i := range v.ipLen {
+			dst[i] = ip[v.ipLen-1-i]
+		}
+		return
+	}
+	copy(dst, ip)
 }
 
 // split breaks a segment into sub-segments whose start and end IPs share the

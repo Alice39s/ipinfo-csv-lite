@@ -32,8 +32,16 @@ func xdbLookup(t *testing.T, path string, version xdbVersion, ip []byte) string 
 		t.Fatalf("ip version = %d, want %d", got, version.id)
 	}
 
-	lo := int64(binary.LittleEndian.Uint32(header[8:]))
-	hi := int64(binary.LittleEndian.Uint32(header[12:]))
+	vectorOffset := (int(ip[0])*xdbVectorCols + int(ip[1])) * 8
+	vector := make([]byte, 8)
+	if _, err := f.ReadAt(vector, int64(xdbHeaderLength+vectorOffset)); err != nil {
+		t.Fatalf("read vector index: %v", err)
+	}
+	lo := int64(binary.LittleEndian.Uint32(vector))
+	hi := int64(binary.LittleEndian.Uint32(vector[4:]))
+	if lo == 0 || hi == 0 {
+		return ""
+	}
 	item := make([]byte, version.indexSize)
 
 	for lo <= hi {
@@ -41,11 +49,11 @@ func xdbLookup(t *testing.T, path string, version xdbVersion, ip []byte) string 
 		if _, err := f.ReadAt(item, mid); err != nil {
 			t.Fatalf("read index item: %v", err)
 		}
-		if bytes.Compare(ip, item[:version.ipLen]) < 0 {
+		if compareStoredIP(version, ip, item[:version.ipLen]) < 0 {
 			hi = mid - int64(version.indexSize)
 			continue
 		}
-		if bytes.Compare(ip, item[version.ipLen:2*version.ipLen]) > 0 {
+		if compareStoredIP(version, ip, item[version.ipLen:2*version.ipLen]) > 0 {
 			lo = mid + int64(version.indexSize)
 			continue
 		}
@@ -58,6 +66,25 @@ func xdbLookup(t *testing.T, path string, version xdbVersion, ip []byte) string 
 		return string(region)
 	}
 	return ""
+}
+
+// compareStoredIP mirrors the official v3 searcher: query IPs are in network
+// byte order, while IPv4 binary-index values retain the legacy little-endian
+// encoding and IPv6 values use network byte order.
+func compareStoredIP(version xdbVersion, query, stored []byte) int {
+	if version.id == 4 {
+		for i, b := range query {
+			s := stored[len(stored)-1-i]
+			if b < s {
+				return -1
+			}
+			if b > s {
+				return 1
+			}
+		}
+		return 0
+	}
+	return bytes.Compare(query, stored)
 }
 
 func mustIP(t *testing.T, s string) []byte {
