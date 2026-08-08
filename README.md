@@ -22,21 +22,25 @@ All releases are published as [immutable releases](https://docs.github.com/en/co
 gh attestation verify ipinfo-lite.mmdb --repo Alice39s/ipinfo-csv-lite
 ```
 
-You can also download the latest release from [Releases](https://github.com/Alice39/ipinfo-csv-lite/releases/latest) page.
+You can also download the latest release from the [Releases](https://github.com/Alice39s/ipinfo-csv-lite/releases/latest) page.
 
 # Data Structure
+
+The generated CSV uses the reduced five-field schema below. XDB stores the
+same values in its compact region string. The MMDB asset intentionally keeps
+IPinfo's official schema instead; see [MMDB Record](#mmdb-record).
 
 ## Python
 
 ```python
-from typing import TypedDict, Optional
+from typing import TypedDict
 
 class IPInfo(TypedDict):
     cidr: str
     country_code: str
     continent_code: str
     as_number: int
-    as_name: Optional[str]
+    as_name: str
 ```
 
 ## Go
@@ -47,7 +51,7 @@ type IPInfo struct {
     CountryCode   string  `json:"country_code"`
     ContinentCode string  `json:"continent_code"`
     ASNumber      int     `json:"as_number"`
-    ASName        *string `json:"as_name"`
+    ASName        string `json:"as_name"`
 }
 ```
 
@@ -59,24 +63,29 @@ interface IPInfo {
   country_code: string;
   continent_code: string;
   as_number: number;
-  as_name: string | null;
+  as_name: string;
 }
 ```
 
 ## MMDB Record
 
-The `.mmdb` file (MaxMind DB format, readable by any [maxminddb client](https://github.com/maxmind?utf8=%E2%9C%93&q=MaxMind-DB&type=all)) stores this structure per network:
+The `.mmdb` release asset is an unchanged, byte-for-byte mirror of IPinfo's
+official `ipinfo_lite.mmdb`, after SHA-256 and MMDB-format validation. It is not
+rebuilt from the reduced CSV, so it retains the complete official record
+schema and metadata and remains directly compatible with existing IPinfo Lite
+MMDB consumers.
 
 ```json
 {
-  "country_code": "US",
-  "continent_code": "NA",
-  "as_number": 15169,
-  "as_name": "Google LLC"
+  "asn": "AS13335",
+  "as_name": "Cloudflare, Inc.",
+  "as_domain": "cloudflare.com",
+  "country": "Australia",
+  "country_code": "AU",
+  "continent": "Oceania",
+  "continent_code": "OC"
 }
 ```
-
-Empty fields are omitted; `as_number` (uint32) is always present.
 
 ## XDB Region
 
@@ -88,7 +97,7 @@ country_code|continent_code|as_number|as_name
 
 ## Requirements
 
-- Go 1.24+ (only needed to build the pipeline; downloading the CSV requires nothing)
+- Go 1.24+ (only needed to build the pipeline; using published release assets requires nothing)
 - Optional: `xz` from xz-utils enables the faster parallel LZMA encoder; a pure-Go fallback is built in
 
 ## Usage
@@ -100,18 +109,27 @@ export IPINFO_TOKEN=<your-token>
 make
 ```
 
-This runs `update` (download + extract), then builds the reduced CSV, compressed archives, MMDB and XDB files through a shared parallel pipeline before writing checksums. Outputs land in `./data/`. Individual steps remain available as `make update`, `make process`, etc.; checks via `make vet test`.
+This runs `update`, which downloads the official CSV and MMDB and verifies each
+against IPinfo's SHA-256 endpoint before extracting the CSV. It then builds the
+reduced CSV, compressed archives and XDB files while publishing the MMDB
+unchanged, and finally writes release checksums. Outputs land in `./data/`.
+Individual steps remain available as `make update`, `make process`, etc.; checks
+via `make vet test`.
 
 ### Manual (no token)
 
-1. Download the latest IPinfo CSV file from [IPinfo Dashboard](https://ipinfo.io/account/data-downloads) - "Free IP to Country + IP to ASN".
-2. Move the CSV file to `./data/country_asn.csv`.
-3. Run `make generate` to build every artifact from the local source without downloading it again.
+1. Download both the CSV and MMDB versions of "IPinfo Lite" from the [IPinfo Dashboard](https://ipinfo.io/account/data-downloads).
+2. Extract the CSV to `./data/ipinfo_lite.csv` and place the official MMDB at `./data/ipinfo_lite.mmdb`.
+3. Run `make generate` to build every artifact from those local sources without downloading them again.
 4. The output files will be in `./data/`.
 
 ## Data Source
 
-- [IPinfo Lite](https://ipinfo.io/lite) - Free country and ASN data for IPv4 and IPv6
+- [IPinfo Lite](https://ipinfo.io/lite) - official free country and ASN data for IPv4 and IPv6
+- Official pipeline inputs: [`ipinfo_lite.csv.gz`](https://ipinfo.io/data/ipinfo_lite.csv.gz) and [`ipinfo_lite.mmdb`](https://ipinfo.io/data/ipinfo_lite.mmdb) (IPinfo token required)
+
+IP address data in every distributed format is powered by
+[IPinfo](https://ipinfo.io/lite).
 
 ## License
 

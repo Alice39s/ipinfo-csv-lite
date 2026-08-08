@@ -28,8 +28,8 @@ func parseLitePrefix(value string) (netip.Prefix, error) {
 // rows (FieldsPerRecord = -1) and consumes the header line. The returned file
 // must be closed by the caller, e.g. via `defer f.Close()`.
 //
-// `runProcess` reads the raw country_asn.csv and `runMmdb`/`runXdb` read the
-// reduced ipinfo-lite.csv; both share this exact setup, so it lives here.
+// `runProcess` reads the raw official CSV and `runXdb` reads the reduced
+// ipinfo-lite.csv; both share this exact setup, so it lives here.
 func openLiteCSV(path string, reuseRecord bool) (*os.File, *csv.Reader, error) {
 	f, err := os.Open(path)
 	if err != nil {

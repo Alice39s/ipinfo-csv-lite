@@ -48,7 +48,7 @@ test:
 	go test ./...
 
 clean:
-	rm -rf bin data/country_asn.csv data/country_asn.csv.gz \
+	rm -rf bin data/ipinfo_lite.csv data/ipinfo_lite.mmdb \
 		data/ipinfo-lite.csv data/ipinfo-lite.csv.gz data/ipinfo-lite.csv.xz \
 		data/ipinfo-lite.csv.zst data/ipinfo-lite.mmdb \
 		data/ipinfo-lite.ipv4.xdb data/ipinfo-lite.ipv6.xdb \

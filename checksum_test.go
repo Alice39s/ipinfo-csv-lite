@@ -14,7 +14,8 @@ func TestWriteChecksums(t *testing.T) {
 		"ipinfo-lite.csv":      "csv-content",
 		"ipinfo-lite.csv.gz":   "gz-content",
 		"ipinfo-lite.ipv4.xdb": "xdb-content",
-		"country_asn.csv":      "intermediate, must be excluded",
+		"ipinfo_lite.csv":      "source, must be excluded",
+		"ipinfo_lite.mmdb":     "source, must be excluded",
 		"ipinfo.version":       "intermediate, must be excluded",
 	}
 	for name, content := range artifacts {
@@ -38,7 +39,7 @@ func TestWriteChecksums(t *testing.T) {
 			t.Errorf("checksums.txt missing entry for %s", name)
 		}
 	}
-	for _, name := range []string{"country_asn.csv", "ipinfo.version"} {
+	for _, name := range []string{"ipinfo_lite.csv", "ipinfo_lite.mmdb", "ipinfo.version"} {
 		if strings.Contains(out, name) {
 			t.Errorf("checksums.txt should not contain %s", name)
 		}

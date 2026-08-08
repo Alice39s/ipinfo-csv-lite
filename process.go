@@ -13,8 +13,14 @@ import (
 	"sync"
 )
 
-// processChunkSize is the number of CSV rows handed to each worker per job.
-const processChunkSize = 20000
+const (
+	// processChunkSize is the number of CSV rows handed to each worker per job.
+	processChunkSize = 20000
+	// CSV parsing and ordered output become the bottleneck before very large
+	// CPU counts help; cap workers to avoid excessive in-flight row batches in
+	// high-core CI containers.
+	processMaxWorkers = 16
+)
 
 // Input columns (IPinfo "lite" format):
 //
@@ -29,7 +35,7 @@ func runProcess() error {
 type processBatchConsumer func([][]string) error
 
 func runProcessWithConsumer(consume processBatchConsumer) error {
-	input := filepath.Join(dataDir, "country_asn.csv")
+	input := filepath.Join(dataDir, sourceCSVName)
 	output := filepath.Join(dataDir, "ipinfo-lite.csv")
 
 	fIn, reader, err := openLiteCSV(input, false)
@@ -49,7 +55,8 @@ func runProcessWithConsumer(consume processBatchConsumer) error {
 		return err
 	}
 
-	if err := transformCSVWithConsumer(reader, writer, runtime.NumCPU(), consume); err != nil {
+	workers := min(runtime.NumCPU(), processMaxWorkers)
+	if err := transformCSVWithConsumer(reader, writer, workers, consume); err != nil {
 		fOut.Close()
 		return err
 	}
