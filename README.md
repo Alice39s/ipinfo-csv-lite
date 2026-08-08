@@ -1,6 +1,7 @@
 # ipinfo-csv-lite
 
-A lightweight IPinfo CSV database, updated daily at 12:00 UTC.
+A lightweight, multi-format distribution of the IPinfo Lite country and ASN
+database, updated daily at 12:00 UTC.
 
 # Download
 
@@ -110,7 +111,7 @@ This runs `update` (download + extract), then builds the reduced CSV, compressed
 
 ## Data Source
 
-- [IPinfo](https://ipinfo.io/) - Free IP to Country + IP to ASN
+- [IPinfo Lite](https://ipinfo.io/lite) - Free country and ASN data for IPv4 and IPv6
 
 ## License
 
