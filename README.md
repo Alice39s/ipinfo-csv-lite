@@ -88,6 +88,7 @@ country_code|continent_code|as_number|as_name
 ## Requirements
 
 - Go 1.24+ (only needed to build the pipeline; downloading the CSV requires nothing)
+- Optional: `xz` from xz-utils enables the faster parallel LZMA encoder; a pure-Go fallback is built in
 
 ## Usage
 
@@ -98,13 +99,13 @@ export IPINFO_TOKEN=<your-token>
 make
 ```
 
-This runs the full pipeline in sequence: `update` (download + extract) → `process` (reduce to the lite schema) → `release` (gzip/xz/zstd compression) → `mmdb` → `xdb` → `checksum`. Outputs land in `./data/`. Individual steps are available as `make update`, `make process`, etc.; checks via `make vet test`.
+This runs `update` (download + extract), then builds the reduced CSV, compressed archives, MMDB and XDB files through a shared parallel pipeline before writing checksums. Outputs land in `./data/`. Individual steps remain available as `make update`, `make process`, etc.; checks via `make vet test`.
 
 ### Manual (no token)
 
 1. Download the latest IPinfo CSV file from [IPinfo Dashboard](https://ipinfo.io/account/data-downloads) - "Free IP to Country + IP to ASN".
 2. Move the CSV file to `./data/country_asn.csv`.
-3. Run `make process release mmdb xdb checksum`.
+3. Run `make generate` to build every artifact from the local source without downloading it again.
 4. The output files will be in `./data/`.
 
 ## Data Source

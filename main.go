@@ -1,8 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
+	"time"
 )
 
 // version is injected at build time via -ldflags "-X main.version=...".
@@ -24,6 +29,7 @@ Commands:
   mmdb      Convert the output to MaxMind DB format (.mmdb)
   xdb       Convert the output to ip2region xdb format (.ipv4.xdb / .ipv6.xdb)
   checksum  Write checksums.txt with SHA-256 of all release artifacts
+  generate  Build all artifacts from existing source data (no download)
   all       Run all of the above in sequence
 `, version)
 }
@@ -52,6 +58,8 @@ func main() {
 		err = runXdb()
 	case "checksum":
 		err = runChecksum()
+	case "generate":
+		err = runGenerate()
 	case "all":
 		err = runAll()
 	case "-h", "--help", "help":
@@ -73,10 +81,72 @@ func main() {
 }
 
 func runAll() error {
-	for _, step := range []func() error{runUpdate, runProcess, runRelease, runMmdb, runXdb, runChecksum} {
-		if err := step(); err != nil {
-			return err
-		}
+	if err := runUpdate(); err != nil {
+		return err
 	}
-	return nil
+	return runGenerate()
+}
+
+func runGenerate() error {
+	if err := runArtifactPipeline(); err != nil {
+		return err
+	}
+	return runChecksum()
+}
+
+// runArtifactPipeline shares process's ordered output batches with the MMDB and
+// XDB builders. This removes two full CSV parse passes; compression starts as
+// soon as the final CSV is closed while both database writers finish.
+func runArtifactPipeline() error {
+	bufferSize := max(2, runtime.NumCPU())
+	mmdbRows := make(chan [][]string, bufferSize)
+	xdbRows := make(chan [][]string, bufferSize)
+	errs := make(chan error, 3)
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		output := filepath.Join(dataDir, "ipinfo-lite.mmdb")
+		inserted, skipped, err := writeMmdbBatches(mmdbRows, output, time.Now().Unix())
+		if err != nil {
+			errs <- err
+			return
+		}
+		fmt.Printf("Wrote %s (%d networks, %d skipped)\n", output, inserted, skipped)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := writeXdbBatches(xdbRows); err != nil {
+			errs <- err
+		}
+	}()
+
+	processErr := runProcessWithConsumer(func(rows [][]string) error {
+		mmdbRows <- rows
+		xdbRows <- rows
+		return nil
+	})
+	close(mmdbRows)
+	close(xdbRows)
+
+	if processErr == nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := runRelease(); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	allErrors := []error{processErr}
+	for err := range errs {
+		allErrors = append(allErrors, err)
+	}
+	return errors.Join(allErrors...)
 }
