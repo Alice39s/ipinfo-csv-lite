@@ -6,6 +6,17 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      prerelease:
+        description: Publish a pre-release without updating releases/latest
+        required: true
+        type: boolean
+        default: true
+      tag:
+        description: Pre-release tag (ignored for stable releases)
+        required: true
+        type: string
+        default: 2.0.0-rc.1
   schedule:
     - cron: "0 12 * * *" # Every day at 12:00 UTC
 
@@ -32,6 +43,9 @@ jobs:
     needs: checks
     runs-on: ubuntu-22.04
     timeout-minutes: 30
+    concurrency:
+      group: ipinfo-release
+      cancel-in-progress: false
     permissions:
       contents: write # create releases and upload assets
       id-token: write # sign artifact attestations
@@ -45,15 +59,32 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Export IPINFO_TOKEN
-        run: echo "IPINFO_TOKEN=${{ secrets.IPINFO_TOKEN }}" >> "$GITHUB_ENV"
-
       - name: Execute workflow
+        env:
+          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
         run: make
 
       - name: Get current tag
         id: tag
-        run: echo "tag=2.0.0-$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+        env:
+          PRERELEASE: ${{ inputs.prerelease }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$PRERELEASE" == "true" ]]; then
+            if [[ ! "$REQUESTED_TAG" =~ ^2\.0\.0-(alpha|beta|rc)\.[1-9][0-9]*$ ]]; then
+              echo "Invalid pre-release tag: $REQUESTED_TAG" >&2
+              exit 1
+            fi
+            release_tag="$REQUESTED_TAG"
+            prerelease=true
+          else
+            release_tag="2.0.0-$(date +'%Y-%m-%d')"
+            prerelease=false
+          fi
+          {
+            echo "tag=$release_tag"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
 
       # Cryptographically bind each artifact to this commit (Sigstore).
       - name: Generate artifact attestations
@@ -77,6 +108,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          prerelease: ${{ steps.tag.outputs.prerelease }}
           name: ${{ steps.tag.outputs.tag }}
           tag_name: ${{ steps.tag.outputs.tag }}
           files: |
@@ -105,6 +137,13 @@ jobs:
             verify with `gh attestation verify <file> --repo Alice39s/ipinfo-csv-lite`.
 
       - name: Publish release
-        run: gh release edit "${{ steps.tag.outputs.tag }}" --draft=false --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE: ${{ steps.tag.outputs.prerelease }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if [[ "$PRERELEASE" == "true" ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease
+          else
+            gh release edit "$RELEASE_TAG" --draft=false --latest
+          fi
